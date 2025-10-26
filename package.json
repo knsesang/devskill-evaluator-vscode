@@ -1,0 +1,41 @@
+{
+  "name": "devskill-evaluator",
+  "displayName": "DevSkill Evaluator",
+  "description": "AI 기반 개발자 역량 평가 플랫폼",
+  "version": "0.1.0",
+  "publisher": "devskill",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:devskill-evaluator.startChallenge"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "devskill-evaluator.startChallenge",
+        "title": "DevSkill: 문제 시작하기"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "packageManager": "pnpm@10.19.0"
+}
+
