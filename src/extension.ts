@@ -6,7 +6,20 @@ export function activate(context: vscode.ExtensionContext) {
     console.log('DevSkill Evaluator 확장 프로그램이 활성화되었습니다.');
 
     // "문제 시작하기" 명령어 등록
-    let disposable = vscode.commands.registerCommand('devskill-evaluator.startChallenge', () => {
+    let disposable = vscode.commands.registerCommand('devskill-evaluator.startChallenge', async () => {
+        // 문제 선택
+        const problemId = await vscode.window.showQuickPick(
+            [
+                { label: '문제 1: 두 수의 합 구하기', id: '1' },
+                { label: '문제 2: HTTP 서버 만들기', id: '2' }
+            ],
+            { placeHolder: '풀고 싶은 문제를 선택하세요' }
+        );
+
+        if (!problemId) {
+            return;
+        }
+
         // 웹뷰 패널 생성
         const panel = vscode.window.createWebviewPanel(
             'devskillChallenge',
@@ -18,21 +31,29 @@ export function activate(context: vscode.ExtensionContext) {
             }
         );
 
-        // 웹뷰 HTML 설정
-        panel.webview.html = getWebviewContent();
+        // 문제 데이터 가져오기
+        try {
+            const response = await fetch(`${BACKEND_URL}/problem/${problemId.id}`);
+            const problem = await response.json();
 
-        // 웹뷰로부터 메시지 수신 처리
-        panel.webview.onDidReceiveMessage(
-            async message => {
-                switch (message.command) {
-                    case 'submitCode':
-                        await handleCodeSubmission(panel);
-                        return;
-                }
-            },
-            undefined,
-            context.subscriptions
-        );
+            // 웹뷰 HTML 설정
+            panel.webview.html = getWebviewContent(problem);
+
+            // 웹뷰로부터 메시지 수신 처리
+            panel.webview.onDidReceiveMessage(
+                async message => {
+                    switch (message.command) {
+                        case 'submitCode':
+                            await handleCodeSubmission(panel, problemId.id, message.runtime);
+                            return;
+                    }
+                },
+                undefined,
+                context.subscriptions
+            );
+        } catch (error) {
+            vscode.window.showErrorMessage('문제를 불러올 수 없습니다: ' + error);
+        }
     });
 
     context.subscriptions.push(disposable);
@@ -41,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
 /**
  * 코드 제출 처리 함수
  */
-async function handleCodeSubmission(panel: vscode.WebviewPanel) {
+async function handleCodeSubmission(panel: vscode.WebviewPanel, problemId: string, runtime: string) {
     // 현재 활성화된 에디터 가져오기
     const editor = vscode.window.activeTextEditor;
     
@@ -58,6 +79,11 @@ async function handleCodeSubmission(panel: vscode.WebviewPanel) {
         return;
     }
 
+    // 제출 중 표시
+    panel.webview.postMessage({
+        command: 'submitting'
+    });
+
     try {
         // 백엔드 API로 코드 제출
         const response = await fetch(`${BACKEND_URL}/submit`, {
@@ -65,23 +91,32 @@ async function handleCodeSubmission(panel: vscode.WebviewPanel) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ code: code })
+            body: JSON.stringify({ 
+                problem_id: problemId,
+                code: code,
+                runtime: runtime || 'nodejs'
+            })
         });
 
         if (!response.ok) {
             throw new Error(`서버 응답 오류: ${response.status}`);
         }
 
-        const result = await response.json() as { message: string; status: string };
+        const result = await response.json() as any;
         
-        // 성공 메시지 표시
-        vscode.window.showInformationMessage(`✅ ${result.message}`);
+        // 결과에 따라 알림 표시
+        if (result.success && result.score === 100) {
+            vscode.window.showInformationMessage(`🎉 ${result.message} (점수: ${result.score}/100)`);
+        } else if (result.success && result.score > 0) {
+            vscode.window.showWarningMessage(`${result.message} (점수: ${result.score}/100)`);
+        } else {
+            vscode.window.showErrorMessage(`${result.message}`);
+        }
         
-        // 웹뷰에도 성공 메시지 전달
+        // 웹뷰에 결과 전달
         panel.webview.postMessage({
             command: 'submissionResult',
-            success: true,
-            message: result.message
+            result: result
         });
 
     } catch (error) {
@@ -90,8 +125,10 @@ async function handleCodeSubmission(panel: vscode.WebviewPanel) {
         
         panel.webview.postMessage({
             command: 'submissionResult',
-            success: false,
-            message: errorMessage
+            result: {
+                success: false,
+                message: errorMessage
+            }
         });
     }
 }
@@ -99,7 +136,9 @@ async function handleCodeSubmission(panel: vscode.WebviewPanel) {
 /**
  * 웹뷰 HTML 콘텐츠 생성
  */
-function getWebviewContent() {
+function getWebviewContent(problem: any) {
+    const isServerProblem = problem.id === '2';
+    
     return `
         <!DOCTYPE html>
         <html lang="ko">
@@ -119,6 +158,10 @@ function getWebviewContent() {
                     color: var(--vscode-editor-foreground);
                     border-bottom: 2px solid var(--vscode-textLink-foreground);
                     padding-bottom: 10px;
+                }
+                h2 {
+                    color: var(--vscode-editor-foreground);
+                    margin-top: 20px;
                 }
                 #description {
                     background-color: var(--vscode-textBlockQuote-background);
@@ -145,6 +188,7 @@ function getWebviewContent() {
                     cursor: pointer;
                     border-radius: 4px;
                     margin-top: 10px;
+                    margin-right: 10px;
                 }
                 button:hover {
                     background-color: var(--vscode-button-hoverBackground);
@@ -153,35 +197,63 @@ function getWebviewContent() {
                     opacity: 0.5;
                     cursor: not-allowed;
                 }
-                .loading {
-                    color: var(--vscode-descriptionForeground);
-                    font-style: italic;
-                }
-                .error {
-                    color: var(--vscode-errorForeground);
-                    background-color: var(--vscode-inputValidation-errorBackground);
-                    padding: 10px;
-                    border-radius: 4px;
-                    margin: 10px 0;
-                }
-                .success {
-                    color: var(--vscode-terminal-ansiGreen);
-                    background-color: var(--vscode-textBlockQuote-background);
-                    padding: 10px;
-                    border-radius: 4px;
-                    margin: 10px 0;
-                }
                 .info-box {
                     background-color: var(--vscode-textBlockQuote-background);
                     border-left: 4px solid var(--vscode-textLink-activeForeground);
                     padding: 10px 15px;
                     margin: 15px 0;
                 }
+                .result-box {
+                    margin-top: 20px;
+                    padding: 15px;
+                    border-radius: 4px;
+                }
+                .result-success {
+                    background-color: rgba(0, 255, 0, 0.1);
+                    border: 1px solid rgba(0, 255, 0, 0.3);
+                }
+                .result-partial {
+                    background-color: rgba(255, 165, 0, 0.1);
+                    border: 1px solid rgba(255, 165, 0, 0.3);
+                }
+                .result-fail {
+                    background-color: rgba(255, 0, 0, 0.1);
+                    border: 1px solid rgba(255, 0, 0, 0.3);
+                }
+                .test-result {
+                    font-family: 'Courier New', monospace;
+                    margin: 5px 0;
+                }
+                .test-pass {
+                    color: #4ec9b0;
+                }
+                .test-fail {
+                    color: #f48771;
+                }
+                .ai-review {
+                    background-color: var(--vscode-textBlockQuote-background);
+                    border-left: 4px solid #569cd6;
+                    padding: 15px;
+                    margin: 15px 0;
+                    white-space: pre-wrap;
+                }
+                select {
+                    background-color: var(--vscode-dropdown-background);
+                    color: var(--vscode-dropdown-foreground);
+                    border: 1px solid var(--vscode-dropdown-border);
+                    padding: 5px 10px;
+                    margin: 10px 0;
+                    font-size: 14px;
+                }
+                .loading {
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                }
             </style>
         </head>
         <body>
-            <h1 id="title">문제를 불러오는 중...</h1>
-            <div id="description" class="loading">문제 설명을 가져오고 있습니다...</div>
+            <h1>${problem.title}</h1>
+            <div id="description">${problem.description}</div>
             
             <div class="info-box">
                 <strong>📝 작업 방법:</strong><br>
@@ -190,69 +262,101 @@ function getWebviewContent() {
                 3. 작성한 파일을 VS Code에서 열어둔 상태로 '제출' 버튼을 클릭하세요.
             </div>
 
-            <h3>📋 코드 템플릿</h3>
-            <div id="template" class="loading">템플릿을 가져오고 있습니다...</div>
+            ${isServerProblem ? `
+            <div class="info-box">
+                <strong>🔧 런타임 선택:</strong><br>
+                <select id="runtimeSelect">
+                    <option value="nodejs">Node.js</option>
+                    <option value="deno">Deno</option>
+                    <option value="bun">Bun</option>
+                </select>
+            </div>
+            ` : ''}
+
+            <h2>📋 코드 템플릿</h2>
+            <div id="template">${problem.template}</div>
             
-            <button id="submitBtn" disabled>현재 파일 제출하기</button>
+            <button id="submitBtn">현재 파일 제출하기</button>
+            
             <div id="result"></div>
 
             <script>
                 const vscode = acquireVsCodeApi();
                 const submitBtn = document.getElementById('submitBtn');
                 const resultDiv = document.getElementById('result');
-
-                // 페이지 로드 시 백엔드에서 문제 정보 가져오기
-                window.addEventListener('load', async () => {
-                    try {
-                        const response = await fetch('${BACKEND_URL}/problem/1');
-                        
-                        if (!response.ok) {
-                            throw new Error('문제를 불러올 수 없습니다.');
-                        }
-                        
-                        const data = await response.json();
-                        
-                        // 문제 정보 표시
-                        document.getElementById('title').textContent = data.title;
-                        document.getElementById('description').textContent = data.description;
-                        document.getElementById('description').className = '';
-                        document.getElementById('template').textContent = data.template;
-                        document.getElementById('template').className = '';
-                        
-                        // 제출 버튼 활성화
-                        submitBtn.disabled = false;
-                        
-                    } catch (error) {
-                        document.getElementById('title').textContent = '오류 발생';
-                        document.getElementById('description').innerHTML = 
-                            '<div class="error">❌ ' + error.message + '<br><br>백엔드 서버가 실행 중인지 확인해주세요.</div>';
-                        document.getElementById('description').className = '';
-                    }
-                });
+                const runtimeSelect = document.getElementById('runtimeSelect');
 
                 // 제출 버튼 클릭 이벤트
                 submitBtn.addEventListener('click', () => {
                     submitBtn.disabled = true;
                     submitBtn.textContent = '제출 중...';
-                    resultDiv.innerHTML = '';
+                    resultDiv.innerHTML = '<div class="loading">⏳ 코드를 평가하고 있습니다...</div>';
+                    
+                    const runtime = runtimeSelect ? runtimeSelect.value : 'nodejs';
                     
                     // VS Code 확장 프로그램에 제출 요청
-                    vscode.postMessage({ command: 'submitCode' });
+                    vscode.postMessage({ 
+                        command: 'submitCode',
+                        runtime: runtime
+                    });
                 });
 
                 // 확장 프로그램으로부터 메시지 수신
                 window.addEventListener('message', event => {
                     const message = event.data;
                     
+                    if (message.command === 'submitting') {
+                        submitBtn.disabled = true;
+                        submitBtn.textContent = '제출 중...';
+                        resultDiv.innerHTML = '<div class="loading">⏳ 코드를 평가하고 있습니다...</div>';
+                    }
+                    
                     if (message.command === 'submissionResult') {
                         submitBtn.disabled = false;
                         submitBtn.textContent = '현재 파일 제출하기';
                         
-                        if (message.success) {
-                            resultDiv.innerHTML = '<div class="success">✅ ' + message.message + '</div>';
-                        } else {
-                            resultDiv.innerHTML = '<div class="error">❌ ' + message.message + '</div>';
+                        const result = message.result;
+                        
+                        if (!result.success) {
+                            resultDiv.innerHTML = '<div class="result-box result-fail"><strong>❌ 오류</strong><br>' + result.message + '</div>';
+                            return;
                         }
+
+                        let resultClass = 'result-fail';
+                        let emoji = '❌';
+                        if (result.score === 100) {
+                            resultClass = 'result-success';
+                            emoji = '🎉';
+                        } else if (result.score > 0) {
+                            resultClass = 'result-partial';
+                            emoji = '⚠️';
+                        }
+
+                        let html = '<div class="result-box ' + resultClass + '">';
+                        html += '<h2>' + emoji + ' ' + result.message + '</h2>';
+                        html += '<p><strong>점수: ' + result.score + '/100</strong></p>';
+                        
+                        if (result.test_results && result.test_results.length > 0) {
+                            html += '<h3>테스트 결과:</h3>';
+                            result.test_results.forEach(test => {
+                                const isPassed = test.startsWith('PASS');
+                                const className = isPassed ? 'test-pass' : 'test-fail';
+                                html += '<div class="test-result ' + className + '">' + test + '</div>';
+                            });
+                        }
+
+                        if (result.execution_log) {
+                            html += '<h3>실행 로그:</h3>';
+                            html += '<pre>' + result.execution_log + '</pre>';
+                        }
+
+                        if (result.ai_review) {
+                            html += '<h3>🤖 AI 코드 리뷰:</h3>';
+                            html += '<div class="ai-review">' + result.ai_review + '</div>';
+                        }
+
+                        html += '</div>';
+                        resultDiv.innerHTML = html;
                     }
                 });
             </script>
